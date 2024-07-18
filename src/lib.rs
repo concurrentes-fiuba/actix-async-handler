@@ -7,6 +7,8 @@ use proc_macro::TokenStream;
 use crate::r#impl::async_handler_impl;
 
 mod r#impl;
+#[cfg(test)]
+mod integration_test;
 
 #[proc_macro_attribute]
 pub fn async_handler(attribute: TokenStream, input: TokenStream) -> TokenStream {

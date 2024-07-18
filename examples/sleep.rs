@@ -1,5 +1,3 @@
-extern crate actix;
-
 use std::time::Duration;
 
 use actix::{Actor, ActorContext, Addr, Context, Handler, Message};
@@ -25,8 +23,7 @@ impl Handler<Ping> for Ponger {
         println!("[Ponger] sleeping for {} secs", msg.0);
         sleep(Duration::from_secs(msg.0)).await;
         println!("[Ponger] woke up.");
-        // msg.0
-        1
+        msg.0
     }
 }
 

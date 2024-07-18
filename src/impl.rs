@@ -80,57 +80,54 @@ fn process_handler_fn(is_atomic: bool, body: &mut ImplItemFn) -> Result<()> {
 
     let self_renamed = RenameParams(ctx_ident).fold_block(body.clone().block);
 
-    // TODO: support awaits inside ifs
-    // TODO: support awaits inside fors
+    // TODO: support awaits inside conditional branches (if/match)
+    // TODO: support awaits inside cycles
     // TODO: awaits in assignments and renaming in the following code to __res
-    // TODO: state machine for internal vars passing thru future chain; including incoming message
 
     let awaits = split_awaits(&self_renamed);
 
-    let mut future_chain = Vec::new();
-
-    for await_block in &awaits[0..awaits.len() - 1] {
-        future_chain.push(quote! {
-            .then(move |__res, __self, __ctx| {
-                #(#await_block)*
+    let future_chain = awaits.iter().rfold(None, |acc, await_block|
+        match acc {
+            Some(inner) => Some(quote! {
+                .then(move |__res, __self, __ctx| {
+                    #await_block #inner
+                })
+            }),
+            None => Some(quote! {
+                .map(move |__res, __self, __ctx| {
+                    #await_block
+                })
             })
-        })
-    }
-
-    let last = awaits.last().unwrap();
-    future_chain.push(quote! {
-        .map(move |__res, __self, __ctx| {
-            #(#last)*
-        })
-    });
+        }
+    ).unwrap_or(quote!());
 
     let result_type = result_type_ident(is_atomic, body.span());
 
     body.block = parse_quote!({
-        use crate::actix::ActorFutureExt;
+        use actix::ActorFutureExt;
         actix::#result_type::new(Box::pin(actix::fut::wrap_future::<_, Self>(actix::fut::ready(()))
-            #(#future_chain)*
+            #future_chain
        ))
     });
 
     Ok(())
 }
 
-fn split_awaits(block: &Block) -> Vec<Vec<Stmt>> {
+fn split_awaits(block: &Block) -> Vec<TokenStream> {
     let mut parts = Vec::new();
-    let mut current_part = Vec::new();
+    let mut current_part = TokenStream::new();
     for stmt in &block.stmts {
         match stmt {
             Stmt::Expr(Expr::Await(expr), _) => {
                 let base = &*expr.base;
-                current_part.push(parse_quote!(
-                    return actix::fut::wrap_future::<_, Self>(#base);
-                ));
+                quote!(
+                    actix::fut::wrap_future::<_, Self>(#base)
+                ).to_tokens(&mut current_part);
                 parts.push(current_part);
-                current_part = Vec::new();
+                current_part = TokenStream::new();
             }
             stmt => {
-                current_part.push(stmt.clone());
+                stmt.to_tokens(&mut current_part);
             }
         }
     }
@@ -171,7 +168,6 @@ impl Fold for RenameParams {
 
 #[cfg(test)]
 mod tests {
-    use rust_format::Formatter;
     use super::*;
 
     #[test]
@@ -242,12 +238,7 @@ mod tests {
         });
 
         let split = split_awaits(&block);
-        dbg!(&split[0]);
         assert_eq!(split.len(), 4);
-        assert_eq!(split[0].len(), 3);
-        assert_eq!(split[1].len(), 2);
-        assert_eq!(split[2].len(), 1);
-        assert_eq!(split[3].len(), 2);
     }
 
     #[test]
@@ -283,89 +274,6 @@ mod tests {
     #[test]
     fn test_non_atomic_response() {
         todo!()
-    }
-
-    #[test]
-    fn test_splits_awaits_integration() {
-        let result = async_handler_inner(true, quote! {
-            impl Handler<T> for AnActor {
-                async fn handle(&mut self, msg: Ping, ctx: &mut Self::Context) -> Self::Result {
-                    println!("Before 1");
-                    println!("Before 2");
-                    sleep(Duration::from_secs(1)).await;
-                    println!("After first 1");
-                    sleep(Duration::from_secs(1)).await;
-                    sleep(Duration::from_secs(1)).await;
-                    println!("Final 1");
-                    println!("Final 2");
-                }
-            }
-        });
-
-        let expected =
-r#"impl Handler<T> for AnActor {
-    fn handle(&mut self, msg: Ping, ctx: &mut Self::Context) -> Self::Result {
-        use crate::actix::ActorFutureExt;
-        actix::AtomicResponse::new(Box::pin(
-            actix::fut::wrap_future::<_, Self>(actix::fut::ready(()))
-                .then(move |__res, __self, __ctx| {
-                    println!("Before 1");
-                    println!("Before 2");
-                    return actix::fut::wrap_future::<_, Self>(sleep(Duration::from_secs(1)));
-                })
-                .then(move |__res, __self, __ctx| {
-                    println!("After first 1");
-                    return actix::fut::wrap_future::<_, Self>(sleep(Duration::from_secs(1)));
-                })
-                .then(move |__res, __self, __ctx| {
-                    return actix::fut::wrap_future::<_, Self>(sleep(Duration::from_secs(1)));
-                })
-                .map(move |__res, __self, __ctx| {
-                    println!("Final 1");
-                    println!("Final 2");
-                }),
-        ))
-    }
-}
-"#;
-
-        let actual = rust_format::RustFmt::default().format_tokens(result.expect("")).expect("");
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn test_splits_awaits_no_awaits_integration() {
-
-        let result = async_handler_inner(true, quote! {
-            impl Handler<T> for AnActor {
-
-                type Result = String;
-
-                async fn handle(&mut self, msg: Ping, ctx: &mut Self::Context) -> Self::Result {
-                    println!("Before 1");
-                    println!("Before 2");
-                }
-            }
-        });
-
-        let expected =
-r#"impl Handler<T> for AnActor {
-    type Result = actix::AtomicResponse<Self, String>;
-    fn handle(&mut self, msg: Ping, ctx: &mut Self::Context) -> Self::Result {
-        use crate::actix::ActorFutureExt;
-        actix::AtomicResponse::new(Box::pin(
-            actix::fut::wrap_future::<_, Self>(actix::fut::ready(())).map(
-                move |__res, __self, __ctx| {
-                    println!("Before 1");
-                    println!("Before 2");
-                },
-            ),
-        ))
-    }
-}
-"#;
-        let actual = rust_format::RustFmt::default().format_tokens(result.expect("")).expect("");
-        assert_eq!(expected, actual)
     }
 
 }
