@@ -28,7 +28,6 @@ impl Handler<Ping> for Ponger {
 }
 
 struct Pinger {
-    count: u64,
     ponger: Addr<Ponger>
 }
 
@@ -42,14 +41,11 @@ impl Handler<Ping> for Pinger {
     type Result = u64;
 
     async fn handle(&mut self, msg: Ping, ctx: &mut Self::Context) -> Self::Result {
-        println!("[Pinger] sleeping for {} secs", msg.0);
-        sleep(Duration::from_secs(msg.0)).await;
-        println!("[Pinger] woke up");
-        println!("[Pinger] alive {}", ctx.state().alive());
+        // TODO: support working with call results
         // let result = self.ponger.send(msg).await;
-        // self.count += result.unwrap();
-        self.count += 1;
-        self.count
+        // result.unwrap() + 1
+        self.ponger.send(msg).await;
+        0
     }
 
 }
@@ -58,7 +54,7 @@ impl Handler<Ping> for Pinger {
 async fn main() {
 
     let ponger = Ponger {}.start();
-    let pinger = Pinger { count: 0, ponger }.start();
+    let pinger = Pinger { ponger }.start();
 
-    println!("Count {}", pinger.send(Ping(2)).await.unwrap());
+    println!("Result {}", pinger.send(Ping(2)).await.unwrap());
 }
