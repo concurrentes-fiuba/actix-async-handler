@@ -80,13 +80,6 @@ fn process_handler_fn(is_atomic: bool, body: &mut ImplItemFn) -> Result<()> {
 
     let self_renamed = RenameParams(ctx_ident).fold_block(body.clone().block);
 
-    // TODO: awaits in assignments and renaming in the following code to __res
-    // TODO: support awaits inside conditional branches (if/match)
-    // TODO: support awaits inside cycles
-    // TODO: support join!
-    // TODO: support operating with await result in the same statement (i.e. `some_future.await + 3`)
-    // TODO: support unnamed params in handler fn
-
     let awaits = split_awaits(&self_renamed);
 
     let future_chain = awaits.iter().rfold(None, |acc, await_block|
