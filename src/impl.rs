@@ -1,6 +1,6 @@
 use proc_macro2::{Span, TokenStream, TokenTree};
 use quote::{quote, ToTokens};
-use syn::{Block, Error, Expr, Ident, ImplItem, ImplItemFn, ImplItemType, ItemImpl, Macro, Pat, Result, Stmt};
+use syn::{Block, Error, Expr, ExprAssign, Ident, ImplItem, ImplItemFn, ImplItemType, ItemImpl, Local, LocalInit, Macro, Pat, Result, Stmt};
 use syn::FnArg::Typed;
 use syn::fold::Fold;
 use syn::spanned::Spanned;
@@ -122,6 +122,34 @@ fn split_awaits(block: &Block) -> Vec<TokenStream> {
                 parts.push(current_part);
                 current_part = TokenStream::new();
             }
+            Stmt::Expr(Expr::Assign(ExprAssign { left, right: expr, .. }), ..)
+                if matches!(**expr, Expr::Await(_)) => {
+                    if let Expr::Await(inner) = &**expr {
+                        let base = &*inner.base;
+                        quote!(
+                            actix::fut::wrap_future::<_, Self>(#base)
+                        ).to_tokens(&mut current_part);
+                        parts.push(current_part);
+                        current_part = TokenStream::new();
+                        quote! (
+                            #left = __res;
+                        ).to_tokens(&mut current_part);
+                    }
+            }
+            Stmt::Local(Local { pat, init: Some(LocalInit { expr, .. }), .. } )
+                if matches!(**expr, Expr::Await(_)) => {
+                    if let Expr::Await(inner) = &**expr {
+                        let base = &*inner.base;
+                        quote!(
+                                actix::fut::wrap_future::<_, Self>(#base)
+                            ).to_tokens(&mut current_part);
+                        parts.push(current_part);
+                        current_part = TokenStream::new();
+                        quote! (
+                            let #pat = __res;
+                        ).to_tokens(&mut current_part);
+                    }
+            }
             stmt => {
                 stmt.to_tokens(&mut current_part);
             }
@@ -181,54 +209,14 @@ mod tests {
     }
 
     #[test]
-    fn test_signature_removes_async() {
-        todo!()
-    }
-
-    #[test]
-    fn test_signature_updates_result_type() {
-        todo!()
-    }
-
-    #[test]
-    fn test_renames_self_top_level_references() {
-        todo!()
-    }
-
-    #[test]
-    fn test_renames_self_parameter_references() {
-        todo!()
-    }
-
-    #[test]
-    fn test_renames_self_macro_parameter_references() {
-        todo!()
-    }
-
-    #[test]
-    fn test_renames_ctx_top_level_references() {
-        todo!()
-    }
-
-    #[test]
-    fn test_renames_ctx_param_references() {
-        todo!()
-    }
-
-    #[test]
-    fn test_renames_ctx_macro_parameter_references() {
-        todo!()
-    }
-
-    #[test]
     fn test_splits_awaits() {
         let block = parse_quote!({
             println!("Before 1");
             println!("Before 2");
             sleep(Duration::from_secs(1)).await;
             println!("After first 1");
-            sleep(Duration::from_secs(1)).await;
-            sleep(Duration::from_secs(1)).await;
+            let result = sleep(Duration::from_secs(1)).await;
+            result = sleep(Duration::from_secs(1)).await;
             println!("Final 1");
             println!("Final 2");
         });
@@ -236,40 +224,4 @@ mod tests {
         let split = split_awaits(&block);
         assert_eq!(split.len(), 4);
     }
-
-    #[test]
-    fn test_returns_last_await_result() {
-        todo!()
-    }
-
-    #[test]
-    fn test_returns_last_statement() {
-        todo!()
-    }
-
-    #[test]
-    fn test_uses_message_between_awaits() {
-        todo!()
-    }
-
-    #[test]
-    fn test_supports_variables_between_awaits() {
-        todo!()
-    }
-
-    #[test]
-    fn test_supports_conditional_awaits() {
-        todo!()
-    }
-
-    #[test]
-    fn test_supports_await_loops() {
-        todo!()
-    }
-
-    #[test]
-    fn test_non_atomic_response() {
-        todo!()
-    }
-
 }

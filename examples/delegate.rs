@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use actix::{Actor, ActorContext, Addr, Context, Handler, Message};
+use actix::{Actor, Addr, Context, Handler, Message};
 use actix::clock::sleep;
 
 use actix_async_handler::async_handler;
@@ -41,11 +41,8 @@ impl Handler<Ping> for Pinger {
     type Result = u64;
 
     async fn handle(&mut self, msg: Ping, ctx: &mut Self::Context) -> Self::Result {
-        // TODO: support working with call results
-        // let result = self.ponger.send(msg).await;
-        // result.unwrap() + 1
-        self.ponger.send(msg).await;
-        0
+        let result = self.ponger.send(msg).await;
+        result.unwrap() + 1
     }
 
 }

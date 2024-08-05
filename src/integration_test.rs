@@ -149,3 +149,47 @@ r#"impl Handler<GetVariables> for Variables {
     let actual = rust_format::RustFmt::default().format_tokens(result.clone().expect("")).expect("");
     assert_eq!(expected, actual)
 }
+
+#[test]
+fn test_await_return_value_assignment() {
+    let result = async_handler_inner(true, quote! {
+        impl Handler<GetVariables> for ResultAssignment {
+            type Result = u64;
+            async fn handle(&mut self, msg: GetVariables, ctx: &mut Self::Context) -> Self::Result {
+                let result2;
+                let result1 = self.other_actor.send(0).await;
+                result2 = self.other_actor.send(result1).await;
+                result1 + result2
+            }
+        }
+    });
+
+    let expected =
+        r#"impl Handler<GetVariables> for ResultAssignment {
+    type Result = actix::AtomicResponse<Self, u64>;
+    fn handle(&mut self, msg: GetVariables, ctx: &mut Self::Context) -> Self::Result {
+        use actix::ActorFutureExt;
+        actix::AtomicResponse::new(Box::pin(
+            actix::fut::wrap_future::<_, Self>(actix::fut::ready(())).then(
+                move |__res, __self, __ctx| {
+                    let result2;
+                    actix::fut::wrap_future::<_, Self>(__self.other_actor.send(0)).then(
+                        move |__res, __self, __ctx| {
+                            let result1 = __res;
+                            actix::fut::wrap_future::<_, Self>(__self.other_actor.send(result1))
+                                .map(move |__res, __self, __ctx| {
+                                    result2 = __res;
+                                    result1 + result2
+                                })
+                        },
+                    )
+                },
+            ),
+        ))
+    }
+}
+"#;
+
+    let actual = rust_format::RustFmt::default().format_tokens(result.clone().expect("")).expect("");
+    assert_eq!(expected, actual)
+}
