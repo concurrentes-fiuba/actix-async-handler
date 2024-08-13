@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "actix_async_handler"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "actix",
  "actix-rt",

@@ -1,6 +1,6 @@
 use proc_macro2::{Span, TokenStream, TokenTree};
 use quote::{quote, ToTokens};
-use syn::{Block, Error, Expr, ExprAssign, Ident, ImplItem, ImplItemFn, ImplItemType, ItemImpl, Local, LocalInit, Macro, Pat, Result, Stmt};
+use syn::{Block, Error, Expr, ExprAssign, ExprAwait, ExprBlock, ExprIf, Ident, ImplItem, ImplItemFn, ImplItemType, ItemImpl, Local, LocalInit, Macro, Pat, Result, Stmt};
 use syn::FnArg::Typed;
 use syn::fold::Fold;
 use syn::spanned::Spanned;
@@ -20,18 +20,15 @@ pub fn async_handler_impl(attribute: TokenStream, input: TokenStream) -> TokenSt
 }
 
 pub fn async_handler_inner(is_atomic: bool, input: TokenStream) -> Result<TokenStream> {
-    let input_item = syn::parse2::<ItemImpl>(input.clone());
+    let mut item_fn = syn::parse2::<ItemImpl>(input.clone())?;
 
-    let is_handler = input_item.clone().ok()
-        .and_then(|item| item.trait_)
+    let is_handler = item_fn.trait_.as_ref()
         .and_then(|trait_| trait_.1.segments.first().map(|i| "Handler" == i.ident.to_string()))
         .unwrap_or(false);
 
     if !is_handler {
         return Err(Error::new(input.span(), "#[async_handler] can only be applied to an actor Handler impl"))
     }
-
-    let mut item_fn = input_item.unwrap();
 
     for item in &mut item_fn.items {
         match item {
@@ -82,20 +79,7 @@ fn process_handler_fn(is_atomic: bool, body: &mut ImplItemFn) -> Result<()> {
 
     let awaits = split_awaits(&self_renamed);
 
-    let future_chain = awaits.iter().rfold(None, |acc, await_block|
-        match acc {
-            Some(inner) => Some(quote! {
-                .then(move |__res, __self, __ctx| {
-                    #await_block #inner
-                })
-            }),
-            None => Some(quote! {
-                .map(move |__res, __self, __ctx| {
-                    #await_block
-                })
-            })
-        }
-    ).unwrap_or(quote!());
+    let future_chain = build_future_chain(awaits, true, false);
 
     let result_type = result_type_ident(is_atomic, body.span());
 
@@ -109,54 +93,223 @@ fn process_handler_fn(is_atomic: bool, body: &mut ImplItemFn) -> Result<()> {
     Ok(())
 }
 
+fn build_future_chain(awaits: Vec<TokenStream>, enclose_first: bool, return_unit: bool) -> TokenStream {
+    awaits.iter().rfold(None, |acc, await_block|
+        match acc {
+            Some((count, inner))
+                if count == (awaits.len()-1) && !enclose_first => Some((count + 1, quote! {
+                    #await_block #inner
+            })),
+            Some((count, inner)) => Some((count + 1, quote! {
+                .then(move |__res, __self, __ctx| {
+                    #await_block #inner
+                })
+            })),
+            None if return_unit => Some((1, quote! {
+                .map(move |__res, __self, __ctx| {
+                    #await_block;
+                    ()
+                })
+            })),
+            None if !await_block.is_empty() => Some((1, quote! {
+                .map(move |__res, __self, __ctx| {
+                    #await_block
+                })
+            })),
+            None => Some((1, quote!()))
+        }
+    ).unwrap_or((0, quote!())).1
+}
+
 fn split_awaits(block: &Block) -> Vec<TokenStream> {
-    let mut parts = Vec::new();
-    let mut current_part = TokenStream::new();
+    let mut parts = vec!(TokenStream::new());
     for stmt in &block.stmts {
-        match stmt {
+        if !match stmt {
             Stmt::Expr(Expr::Await(expr), _) => {
-                let base = &*expr.base;
-                quote!(
-                    actix::fut::wrap_future::<_, Self>(#base)
-                ).to_tokens(&mut current_part);
-                parts.push(current_part);
-                current_part = TokenStream::new();
+                expr_await(&mut parts, expr);
+                true
             }
-            Stmt::Expr(Expr::Assign(ExprAssign { left, right: expr, .. }), ..)
-                if matches!(**expr, Expr::Await(_)) => {
-                    if let Expr::Await(inner) = &**expr {
-                        let base = &*inner.base;
+            Stmt::Expr(Expr::Assign(ExprAssign { left, right: expr, .. }), ..) =>
+                match &**expr {
+                    Expr::Await(inner) => {
+                        expr_await(&mut parts, inner);
                         quote!(
-                            actix::fut::wrap_future::<_, Self>(#base)
-                        ).to_tokens(&mut current_part);
-                        parts.push(current_part);
-                        current_part = TokenStream::new();
-                        quote! (
                             #left = __res;
-                        ).to_tokens(&mut current_part);
+                        ).to_tokens(parts.last_mut().unwrap());
+                        true
                     }
-            }
-            Stmt::Local(Local { pat, init: Some(LocalInit { expr, .. }), .. } )
-                if matches!(**expr, Expr::Await(_)) => {
-                    if let Expr::Await(inner) = &**expr {
-                        let base = &*inner.base;
-                        quote!(
-                                actix::fut::wrap_future::<_, Self>(#base)
-                            ).to_tokens(&mut current_part);
-                        parts.push(current_part);
-                        current_part = TokenStream::new();
+                    Expr::If(expr ) => {
+                        if expr_if(&mut parts, expr, false) {
+                            quote!(
+                                #left = __res;
+                            ).to_tokens(parts.last_mut().unwrap());
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false
+                }
+            Stmt::Local(Local { pat, init: Some(LocalInit { expr, .. }), .. } ) =>
+                match &**expr {
+                    Expr::Await(inner) => {
+                        expr_await(&mut parts, inner);
                         quote! (
                             let #pat = __res;
-                        ).to_tokens(&mut current_part);
+                        ).to_tokens(parts.last_mut().unwrap());
+                        true
                     }
+                    Expr::If(expr ) => {
+                        if expr_if(&mut parts, expr, false) {
+                            quote!(
+                                let #pat = __res;
+                            ).to_tokens(parts.last_mut().unwrap());
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false
+                }
+            Stmt::Expr(Expr::If(expr ), ..) => {
+                expr_if(&mut parts, expr, true)
             }
-            stmt => {
-                stmt.to_tokens(&mut current_part);
-            }
+            _ => false
+        } {
+            stmt.to_tokens(parts.last_mut().unwrap());
         }
     }
-    parts.push(current_part);
     parts
+}
+
+fn expr_if(parts: &mut Vec<TokenStream>, expr: &ExprIf, return_unit: bool) -> bool {
+    let result = expr_if_inner(expr, return_unit);
+    if result.is_empty() {
+        false
+    } else {
+        result.to_tokens(parts.last_mut().unwrap());
+        parts.push(TokenStream::new());
+        true
+    }
+}
+fn expr_if_inner(expr: &ExprIf, return_unit: bool) -> TokenStream {
+    let ExprIf { cond, then_branch, else_branch, .. } = expr;
+    let then_parts = split_awaits(then_branch);
+
+    let mut token_stream = TokenStream::new();
+
+    if then_parts.len() > 1 {
+        let then_chain = build_future_chain(then_parts, false, return_unit);
+        quote!(
+            if #cond {
+                Box::pin(#then_chain) as std::pin::Pin<Box<dyn actix::fut::future::ActorFuture<Self, Output=_>>>
+            }
+        ).to_tokens(&mut token_stream);
+        if else_branch.is_none() {
+            quote!(
+                else {
+                    Box::pin(actix::fut::ready(()))
+                }
+            ).to_tokens(&mut token_stream);
+        } else {
+            let else_expr = else_branch.as_ref().unwrap().1.as_ref();
+            let awaited = match else_expr {
+                Expr::Block(ExprBlock { block, .. }) => {
+                    let else_parts = split_awaits(block);
+                    if else_parts.len() > 1 {
+                        let else_chain = build_future_chain(else_parts, false, return_unit);
+                        quote!(
+                            else {
+                                Box::pin(#else_chain)
+                            }
+                        ).to_tokens(&mut token_stream);
+                        true
+                    } else {
+                        false
+                    }
+                },
+                Expr::If(if_expr) => {
+                    let else_parts = expr_if_inner(if_expr, return_unit);
+                    if !else_parts.is_empty() {
+                        // chained else if(s) have awaits
+                        quote!(
+                            else #else_parts
+                        ).to_tokens(&mut token_stream);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false
+            };
+            if !awaited {
+                if return_unit {
+                    quote!(
+                        else {
+                            Box::pin(actix::fut::ready({ #else_expr; }))
+                        }
+                    )
+                } else {
+                    quote!(
+                        else {
+                            Box::pin(actix::fut::ready(#else_expr))
+                        }
+                    )
+                }.to_tokens(&mut token_stream);
+            }
+        }
+    } else if else_branch.is_some() {
+        match else_branch.as_ref().unwrap().1.as_ref() {
+            Expr::Block(ExprBlock { block, .. }) => {
+                let else_parts = split_awaits(block);
+                if else_parts.len() > 1 {
+                    let else_chain = build_future_chain(else_parts, false, return_unit);
+                    non_awaited_if_expr_for_else(return_unit, cond, then_branch, &mut token_stream);
+                    quote!(
+                        else {
+                            Box::pin(#else_chain) as std::pin::Pin<Box<dyn actix::fut::future::ActorFuture<Self, Output=_>>>
+                        }
+                    ).to_tokens(&mut token_stream);
+                }
+            }
+            Expr::If(if_expr) => {
+                let else_parts = expr_if_inner(if_expr, return_unit);
+                if !else_parts.is_empty() {
+                    non_awaited_if_expr_for_else(return_unit, cond, then_branch, &mut token_stream);
+                    // chained else if(s) have awaits
+                    quote!(
+                        else #else_parts
+                    ).to_tokens(&mut token_stream);
+                }
+            }
+            _ => ()
+        }
+    }
+    token_stream
+}
+
+fn non_awaited_if_expr_for_else(return_unit: bool, cond: &Box<Expr>, then_branch: &Block, mut token_stream: &mut TokenStream) {
+    if return_unit {
+        quote!(
+            if #cond {
+                Box::pin(actix::fut::ready({ #then_branch; }))
+            }
+        ).to_tokens(&mut token_stream);
+    } else {
+        quote!(
+            if #cond {
+                Box::pin(actix::fut::ready(#then_branch))
+            }
+        ).to_tokens(&mut token_stream);
+    }
+}
+
+fn expr_await(parts: &mut Vec<TokenStream>, expr: &ExprAwait) {
+    let base = &*expr.base;
+    quote!(
+        actix::fut::wrap_future::<_, Self>(#base)
+    ).to_tokens(parts.last_mut().unwrap());
+    parts.push(TokenStream::new());
 }
 
 struct RenameParams(String);

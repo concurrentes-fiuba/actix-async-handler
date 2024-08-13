@@ -2,7 +2,7 @@
 name = "actix_async_handler"
 description = "Support for async syntax for Actix"
 license = "MIT"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2018"
 repository = "https://github.com/concurrentes-fiuba/actix-async-handler"
 
