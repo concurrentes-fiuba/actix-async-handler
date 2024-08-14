@@ -1,6 +1,8 @@
 use proc_macro2::{Span, TokenStream, TokenTree};
 use quote::{quote, ToTokens};
-use syn::{Block, Error, Expr, ExprAssign, ExprAwait, ExprBlock, ExprIf, Ident, ImplItem, ImplItemFn, ImplItemType, ItemImpl, Local, LocalInit, Macro, Pat, Result, Stmt};
+use rust_format::Error::BadSourceCode;
+use rust_format::Formatter;
+use syn::{Block, Error, Expr, ExprAssign, ExprAwait, ExprBlock, ExprForLoop, ExprIf, Ident, ImplItem, ImplItemFn, ImplItemType, ItemImpl, Local, LocalInit, Macro, Pat, Result, Stmt};
 use syn::FnArg::Typed;
 use syn::fold::Fold;
 use syn::spanned::Spanned;
@@ -83,14 +85,26 @@ fn process_handler_fn(is_atomic: bool, body: &mut ImplItemFn) -> Result<()> {
 
     let result_type = result_type_ident(is_atomic, body.span());
 
-    body.block = parse_quote!({
+    let block = quote!({
         use actix::ActorFutureExt;
         actix::#result_type::new(Box::pin(actix::fut::wrap_future::<_, Self>(actix::fut::ready(()))
             #future_chain
        ))
     });
 
-    Ok(())
+    match syn::parse2::<Block>(block.clone()) {
+        Ok(block) => {
+            body.block = block;
+            Ok(())
+        }
+        Err(e) => {
+            // Errors from parse2 are very short, let's try to use the compiler via RustFmt instead
+            match rust_format::RustFmt::default().format_tokens(quote!( fn handler() { #block })) {
+                Err(BadSourceCode(e)) => Err(Error::new(body.span(), e)),
+                _ => Err(e) // we couldn't get more detail from the formatter, just throw whatever we had,
+            }
+        }
+    }
 }
 
 fn build_future_chain(awaits: Vec<TokenStream>, enclose_first: bool, return_unit: bool) -> TokenStream {
@@ -98,7 +112,7 @@ fn build_future_chain(awaits: Vec<TokenStream>, enclose_first: bool, return_unit
         match acc {
             Some((count, inner))
                 if count == (awaits.len()-1) && !enclose_first => Some((count + 1, quote! {
-                    #await_block #inner
+                    { #await_block #inner }
             })),
             Some((count, inner)) => Some((count + 1, quote! {
                 .then(move |__res, __self, __ctx| {

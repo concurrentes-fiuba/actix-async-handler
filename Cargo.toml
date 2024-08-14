@@ -2,7 +2,7 @@
 name = "actix_async_handler"
 description = "Support for async syntax for Actix"
 license = "MIT"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2018"
 repository = "https://github.com/concurrentes-fiuba/actix-async-handler"
 
@@ -13,8 +13,8 @@ proc-macro = true
 quote = "1"
 syn = { version = "2", features = ["full", "fold", "extra-traits" ] }
 proc-macro2 = "1"
+rust-format = { version = "0.3.4", features = ["token_stream"] }
 
 [dev-dependencies]
 actix = "0.13"
 actix-rt = "2.0"
-rust-format = { version = "0.3.4", features = ["token_stream"] }

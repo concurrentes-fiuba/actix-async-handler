@@ -44,6 +44,7 @@ impl Handler<Ping> for Pinger {
     async fn handle(&mut self, msg: Ping, ctx: &mut Self::Context) -> Self::Result {
 
         if msg.0 > 1 {
+            println!("test code before await");
             self.ponger.send(msg).await
         }
 

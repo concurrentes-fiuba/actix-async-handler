@@ -220,13 +220,13 @@ fn test_if_single_branch() {
             actix::fut::wrap_future::<_, Self>(actix::fut::ready(())).then(
                 move |__res, __self, __ctx| {
                     if msg.0 > 0 {
-                        Box::pin(
+                        Box::pin({
                             actix::fut::wrap_future::<_, Self>(__self.other_actor.send(0)).map(
                                 move |__res, __self, __ctx| {
                                     ()
                                 },
-                            ),
-                        )
+                            )
+                        })
                             as std::pin::Pin<
                                 Box<dyn actix::fut::future::ActorFuture<Self, Output = _>>,
                             >
@@ -275,7 +275,7 @@ fn test_if_branch_awaits() {
             actix::fut::wrap_future::<_, Self>(actix::fut::ready(())).then(
                 move |__res, __self, __ctx| {
                     if msg.0 > 0 {
-                        Box::pin(
+                        Box::pin({
                             actix::fut::wrap_future::<_, Self>(__self.other_actor.send(0)).then(
                                 move |__res, __self, __ctx| {
                                     let part = __res;
@@ -288,8 +288,8 @@ fn test_if_branch_awaits() {
                                         },
                                     )
                                 },
-                            ),
-                        )
+                            )
+                        })
                             as std::pin::Pin<
                                 Box<dyn actix::fut::future::ActorFuture<Self, Output = _>>,
                             >
@@ -343,7 +343,7 @@ fn test_if_branch_awaits_return_value() {
             actix::fut::wrap_future::<_, Self>(actix::fut::ready(())).then(
                 move |__res, __self, __ctx| {
                     if msg.0 > 0 {
-                        Box::pin(
+                        Box::pin({
                             actix::fut::wrap_future::<_, Self>(__self.other_actor.send(0)).then(
                                 move |__res, __self, __ctx| {
                                     let part = __res;
@@ -351,8 +351,8 @@ fn test_if_branch_awaits_return_value() {
                                         __self.other_actor.send(part),
                                     )
                                 },
-                            ),
-                        )
+                            )
+                        })
                             as std::pin::Pin<
                                 Box<dyn actix::fut::future::ActorFuture<Self, Output = _>>,
                             >
@@ -401,24 +401,24 @@ fn test_if_both_branches_await() {
             actix::fut::wrap_future::<_, Self>(actix::fut::ready(())).then(
                 move |__res, __self, __ctx| {
                     if msg.0 > 0 {
-                        Box::pin(
+                        Box::pin({
                             actix::fut::wrap_future::<_, Self>(__self.other_actor.send(0)).map(
                                 move |__res, __self, __ctx| {
                                     ()
                                 },
-                            ),
-                        )
+                            )
+                        })
                             as std::pin::Pin<
                                 Box<dyn actix::fut::future::ActorFuture<Self, Output = _>>,
                             >
                     } else {
-                        Box::pin(
+                        Box::pin({
                             actix::fut::wrap_future::<_, Self>(__self.negative_actor.send(42)).map(
                                 move |__res, __self, __ctx| {
                                     ()
                                 },
-                            ),
-                        )
+                            )
+                        })
                     }
                 },
             ),
@@ -457,9 +457,9 @@ fn test_if_else_awaits() {
                     if msg.0 > 0 {
                         Box::pin(actix::fut::ready({ call_boring_non_awaitable_stuff() }))
                     } else {
-                        Box::pin(actix::fut::wrap_future::<_, Self>(
-                            __self.negative_actor.send(42),
-                        ))
+                        Box::pin({
+                            actix::fut::wrap_future::<_, Self>(__self.negative_actor.send(42))
+                        })
                             as std::pin::Pin<
                                 Box<dyn actix::fut::future::ActorFuture<Self, Output = _>>,
                             >
@@ -510,16 +510,14 @@ fn test_if_else_chain_awaits() {
                     } else if other_cond {
                         Box::pin(actix::fut::ready({ other_boring_stuff() }))
                     } else if nice_cond {
-                        Box::pin(actix::fut::wrap_future::<_, Self>(
-                            __self.fun_actor.send(12),
-                        ))
+                        Box::pin({ actix::fut::wrap_future::<_, Self>(__self.fun_actor.send(12)) })
                             as std::pin::Pin<
                                 Box<dyn actix::fut::future::ActorFuture<Self, Output = _>>,
                             >
                     } else {
-                        Box::pin(actix::fut::wrap_future::<_, Self>(
-                            __self.negative_actor.send(42),
-                        ))
+                        Box::pin({
+                            actix::fut::wrap_future::<_, Self>(__self.negative_actor.send(42))
+                        })
                     }
                     .map(move |__res, __self, __ctx| {
                         let result = __res;
@@ -563,9 +561,9 @@ fn test_if_assigns() {
                 move |__res, __self, __ctx| {
                     let result;
                     if msg.0 > 2 {
-                        Box::pin(actix::fut::wrap_future::<_, Self>(
-                            __self.other_actor.send(part),
-                        ))
+                        Box::pin({
+                            actix::fut::wrap_future::<_, Self>(__self.other_actor.send(part))
+                        })
                             as std::pin::Pin<
                                 Box<dyn actix::fut::future::ActorFuture<Self, Output = _>>,
                             >
@@ -588,18 +586,21 @@ fn test_if_assigns() {
 }
 
 #[test]
-fn test_mut() {
+fn test_for_loop() {
     let result = async_handler_inner(true, quote! {
         impl Handler<Conditional> for ResultAssignment {
             type Result = u64;
             async fn handle(&mut self, msg: Conditional, ctx: &mut Self::Context) -> Self::Result {
-                let mut result = 0;
-                if msg.0 > 2 {
-                    self.other_actor.send(part).await;
-                    result += 1;
-                };
 
-                println("{}", result)
+                for ponger in self.pongers {
+                    println!("pre loop");
+                    ponger.send(msg).await;
+                    println!("middle loop");
+                    ponger.send(Ping(msg.0 + 1)).await;
+                    println!("end loop");
+                }
+
+                self.pongers[0].send(msg).await
             }
         }
     });
