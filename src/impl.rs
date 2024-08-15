@@ -81,7 +81,7 @@ fn process_handler_fn(is_atomic: bool, body: &mut ImplItemFn) -> Result<()> {
 
     let awaits = split_awaits(&self_renamed);
 
-    let future_chain = build_future_chain(awaits, true, false);
+    let future_chain = build_future_chain(awaits, true, None);
 
     let result_type = result_type_ident(is_atomic, body.span());
 
@@ -107,7 +107,7 @@ fn process_handler_fn(is_atomic: bool, body: &mut ImplItemFn) -> Result<()> {
     }
 }
 
-fn build_future_chain(awaits: Vec<TokenStream>, enclose_first: bool, return_unit: bool) -> TokenStream {
+fn build_future_chain(awaits: Vec<TokenStream>, enclose_first: bool, mut return_unit: Option<TokenStream>) -> TokenStream {
     awaits.iter().rfold(None, |acc, await_block|
         match acc {
             Some((count, inner))
@@ -119,12 +119,15 @@ fn build_future_chain(awaits: Vec<TokenStream>, enclose_first: bool, return_unit
                     #await_block #inner
                 })
             })),
-            None if return_unit => Some((1, quote! {
-                .map(move |__res, __self, __ctx| {
-                    #await_block;
-                    ()
-                })
-            })),
+            None if return_unit.is_some() => {
+                let return_value = return_unit.take().unwrap();
+                Some((1, quote! {
+                    .map(move |__res, __self, __ctx| {
+                        #await_block;
+                        #return_value
+                    })
+                }))
+            },
             None if !await_block.is_empty() => Some((1, quote! {
                 .map(move |__res, __self, __ctx| {
                     #await_block
@@ -162,6 +165,16 @@ fn split_awaits(block: &Block) -> Vec<TokenStream> {
                             false
                         }
                     }
+                    Expr::ForLoop(ExprForLoop { pat, expr, body, .. } ) => {
+                        if expr_for_loop(&mut parts, pat, expr, body, Some(left.to_token_stream())) {
+                            quote!(
+                                #left = __res;
+                            ).to_tokens(parts.last_mut().unwrap());
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     _ => false
                 }
             Stmt::Local(Local { pat, init: Some(LocalInit { expr, .. }), .. } ) =>
@@ -183,10 +196,23 @@ fn split_awaits(block: &Block) -> Vec<TokenStream> {
                             false
                         }
                     }
+                    Expr::ForLoop(ExprForLoop { pat: for_pat, expr, body, .. } ) => {
+                        if expr_for_loop(&mut parts, for_pat, expr, body, Some(pat.to_token_stream())) {
+                            quote!(
+                                let #pat = __res;
+                            ).to_tokens(parts.last_mut().unwrap());
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     _ => false
                 }
             Stmt::Expr(Expr::If(expr ), ..) => {
                 expr_if(&mut parts, expr, true)
+            }
+            Stmt::Expr(Expr::ForLoop(ExprForLoop { pat, expr, body, .. } ), ..) => {
+                expr_for_loop(&mut parts, pat, expr, body, None)
             }
             _ => false
         } {
@@ -212,8 +238,10 @@ fn expr_if_inner(expr: &ExprIf, return_unit: bool) -> TokenStream {
 
     let mut token_stream = TokenStream::new();
 
+    let ret = if return_unit { Some(quote! { () }) } else { None };
+
     if then_parts.len() > 1 {
-        let then_chain = build_future_chain(then_parts, false, return_unit);
+        let then_chain = build_future_chain(then_parts, false, ret.clone());
         quote!(
             if #cond {
                 Box::pin(#then_chain) as std::pin::Pin<Box<dyn actix::fut::future::ActorFuture<Self, Output=_>>>
@@ -231,7 +259,7 @@ fn expr_if_inner(expr: &ExprIf, return_unit: bool) -> TokenStream {
                 Expr::Block(ExprBlock { block, .. }) => {
                     let else_parts = split_awaits(block);
                     if else_parts.len() > 1 {
-                        let else_chain = build_future_chain(else_parts, false, return_unit);
+                        let else_chain = build_future_chain(else_parts, false, ret);
                         quote!(
                             else {
                                 Box::pin(#else_chain)
@@ -277,7 +305,7 @@ fn expr_if_inner(expr: &ExprIf, return_unit: bool) -> TokenStream {
             Expr::Block(ExprBlock { block, .. }) => {
                 let else_parts = split_awaits(block);
                 if else_parts.len() > 1 {
-                    let else_chain = build_future_chain(else_parts, false, return_unit);
+                    let else_chain = build_future_chain(else_parts, false, ret);
                     non_awaited_if_expr_for_else(return_unit, cond, then_branch, &mut token_stream);
                     quote!(
                         else {
@@ -324,6 +352,33 @@ fn expr_await(parts: &mut Vec<TokenStream>, expr: &ExprAwait) {
         actix::fut::wrap_future::<_, Self>(#base)
     ).to_tokens(parts.last_mut().unwrap());
     parts.push(TokenStream::new());
+}
+
+fn expr_for_loop(parts: &mut Vec<TokenStream>, pat: &Box<Pat>, expr: &Box<Expr>, body: &Block, acc: Option<TokenStream>) -> bool {
+    let body_parts = split_awaits(body);
+    if body_parts.len() > 1 {
+
+        let unpack_acc_prefix = match acc.clone() {
+            Some(a) => quote! { let mut #a = __acc; },
+            _ => quote! {}
+        };
+
+        let acc = acc.or(Some(quote! { () }));
+        let body = build_future_chain(body_parts, false, acc.clone());
+
+        quote! {
+            use actix::ActorStreamExt;
+            actix::fut::wrap_stream(futures::stream::iter(IntoIterator::into_iter(#expr)))
+                .fold(#acc, move |__acc, #pat, __self, __ctx| {
+                    #unpack_acc_prefix;
+                    Box::pin(#body) as std::pin::Pin<Box<dyn actix::fut::future::ActorFuture<Self, Output=_>>>
+                })
+        }.to_tokens(parts.last_mut().unwrap());
+        parts.push(TokenStream::new());
+        true
+    } else {
+        false
+    }
 }
 
 struct RenameParams(String);

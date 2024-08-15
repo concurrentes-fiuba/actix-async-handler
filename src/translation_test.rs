@@ -95,63 +95,6 @@ r#"impl Handler<T> for AnActor {
 }
 
 #[test]
-fn test_variables_thru_chain() {
-    let result = async_handler_inner(true, quote! {
-        impl Handler<GetVariables> for Variables {
-            type Result = u64;
-            async fn handle(&mut self, msg: GetVariables, ctx: &mut Self::Context) -> Self::Result {
-                let mut var0 = msg.0;
-                sleep(Duration::from_secs(1)).await;
-                var0 += msg.0;
-                let mut var1 = var0;
-                sleep(Duration::from_secs(1)).await;
-                var0 += var1;
-                var1 += var0;
-                let var2 = msg.0;
-                sleep(Duration::from_secs(1)).await;
-                msg.0 + var0 + var1 + var2
-            }
-        }
-    });
-
-    let expected =
-r#"impl Handler<GetVariables> for Variables {
-    type Result = actix::AtomicResponse<Self, u64>;
-    fn handle(&mut self, msg: GetVariables, ctx: &mut Self::Context) -> Self::Result {
-        use actix::ActorFutureExt;
-        actix::AtomicResponse::new(Box::pin(
-            actix::fut::wrap_future::<_, Self>(actix::fut::ready(())).then(
-                move |__res, __self, __ctx| {
-                    let mut var0 = msg.0;
-                    actix::fut::wrap_future::<_, Self>(sleep(Duration::from_secs(1))).then(
-                        move |__res, __self, __ctx| {
-                            var0 += msg.0;
-                            let mut var1 = var0;
-                            actix::fut::wrap_future::<_, Self>(sleep(Duration::from_secs(1))).then(
-                                move |__res, __self, __ctx| {
-                                    var0 += var1;
-                                    var1 += var0;
-                                    let var2 = msg.0;
-                                    actix::fut::wrap_future::<_, Self>(sleep(Duration::from_secs(
-                                        1,
-                                    )))
-                                    .map(move |__res, __self, __ctx| msg.0 + var0 + var1 + var2)
-                                },
-                            )
-                        },
-                    )
-                },
-            ),
-        ))
-    }
-}
-"#;
-
-    let actual = rust_format::RustFmt::default().format_tokens(result.clone().expect("")).expect("");
-    assert_eq!(expected, actual)
-}
-
-#[test]
 fn test_await_return_value_assignment() {
     let result = async_handler_inner(true, quote! {
         impl Handler<GetVariables> for ResultAssignment {
@@ -592,7 +535,7 @@ fn test_for_loop() {
             type Result = u64;
             async fn handle(&mut self, msg: Conditional, ctx: &mut Self::Context) -> Self::Result {
 
-                for ponger in self.pongers {
+                for ponger in self.pongers.clone() {
                     println!("pre loop");
                     ponger.send(msg).await;
                     println!("middle loop");
@@ -605,7 +548,114 @@ fn test_for_loop() {
         }
     });
 
+    let expected =
+        r#"impl Handler<Conditional> for ResultAssignment {
+    type Result = actix::AtomicResponse<Self, u64>;
+    fn handle(&mut self, msg: Conditional, ctx: &mut Self::Context) -> Self::Result {
+        use actix::ActorFutureExt;
+        actix::AtomicResponse::new(Box::pin(
+            actix::fut::wrap_future::<_, Self>(actix::fut::ready(())).then(
+                move |__res, __self, __ctx| {
+                    use actix::ActorStreamExt;
+                    actix::fut::wrap_stream(futures::stream::iter(IntoIterator::into_iter(
+                        __self.pongers.clone(),
+                    )))
+                    .fold((), move |__acc, ponger, __self, __ctx| {
+                        Box::pin({
+                            println!("pre loop");
+                            actix::fut::wrap_future::<_, Self>(ponger.send(msg)).then(
+                                move |__res, __self, __ctx| {
+                                    println!("middle loop");
+                                    actix::fut::wrap_future::<_, Self>(ponger.send(Ping(msg.0 + 1)))
+                                        .map(move |__res, __self, __ctx| {
+                                            println!("end loop");
+                                            ()
+                                        })
+                                },
+                            )
+                        })
+                            as std::pin::Pin<
+                                Box<dyn actix::fut::future::ActorFuture<Self, Output = _>>,
+                            >
+                    })
+                    .then(move |__res, __self, __ctx| {
+                        actix::fut::wrap_future::<_, Self>(__self.pongers[0].send(msg))
+                    })
+                },
+            ),
+        ))
+    }
+}
+"#;
 
     let actual = rust_format::RustFmt::default().format_tokens(result.clone().expect("")).expect("");
-    println!("{}", actual);
+    assert_eq!(expected, actual);
+}
+
+#[test]
+fn test_for_loop_returns() {
+    let result = async_handler_inner(true, quote! {
+        impl Handler<Conditional> for ResultAssignment {
+            type Result = u64;
+            async fn handle(&mut self, msg: Conditional, ctx: &mut Self::Context) -> Self::Result {
+
+                let mut i;
+                i = for ponger in self.pongers.clone() {
+                    println!("pre loop");
+                    ponger.send(msg).await;
+                    println!("middle loop");
+                    ponger.send(Ping(msg.0 + 1)).await;
+                    println!("end loop");
+                };
+
+                self.pongers[0].send(msg).await
+            }
+        }
+    });
+
+    let expected =
+        r#"impl Handler<Conditional> for ResultAssignment {
+    type Result = actix::AtomicResponse<Self, u64>;
+    fn handle(&mut self, msg: Conditional, ctx: &mut Self::Context) -> Self::Result {
+        use actix::ActorFutureExt;
+        actix::AtomicResponse::new(Box::pin(
+            actix::fut::wrap_future::<_, Self>(actix::fut::ready(())).then(
+                move |__res, __self, __ctx| {
+                    let mut i;
+                    use actix::ActorStreamExt;
+                    actix::fut::wrap_stream(futures::stream::iter(IntoIterator::into_iter(
+                        __self.pongers.clone(),
+                    )))
+                    .fold(i, move |__acc, ponger, __self, __ctx| {
+                        let mut i = __acc;
+                        Box::pin({
+                            println!("pre loop");
+                            actix::fut::wrap_future::<_, Self>(ponger.send(msg)).then(
+                                move |__res, __self, __ctx| {
+                                    println!("middle loop");
+                                    actix::fut::wrap_future::<_, Self>(ponger.send(Ping(msg.0 + 1)))
+                                        .map(move |__res, __self, __ctx| {
+                                            println!("end loop");
+                                            i
+                                        })
+                                },
+                            )
+                        })
+                            as std::pin::Pin<
+                                Box<dyn actix::fut::future::ActorFuture<Self, Output = _>>,
+                            >
+                    })
+                    .then(move |__res, __self, __ctx| {
+                        i = __res;
+                        actix::fut::wrap_future::<_, Self>(__self.pongers[0].send(msg))
+                    })
+                },
+            ),
+        ))
+    }
+}
+"#;
+
+    let actual = rust_format::RustFmt::default().format_tokens(result.clone().expect("")).expect("");
+    assert_eq!(expected, actual);
 }

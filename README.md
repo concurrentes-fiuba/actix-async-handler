@@ -44,6 +44,13 @@ Add actix_async_handler as dev dependency.
 cargo add --dev actix_async_handler
 ```
 
+If you intend to use loops, also add futures as dependency
+
+```
+cargo add futures
+```
+
+
 When implementing an async handler, annotate it with the `#[async_handler]` attribute like 
 
 ```rust
@@ -282,4 +289,51 @@ if let Move(x, y) = action {
 } else {
     println!("unknown action");
 }
+```
+
+### Loops
+
+In the case of loops containing awaits in their blocks 
+
+- `for` loops are the only ones currently supported. 
+  - `while` loops only depending on the actor state in the condition could be easily implemented by `take_while`ing an 
+    infinite stream (`wrap_stream(futures::stream::iter(iter::repeat()))`)
+  - `while` loops depending on scope accumulators (i.e. `let mut i = 0; while i < 3 { i += 1}`) should require to create
+    a `TryActorStream`, in particular `TryFold`; to be able to pass the current accumulator value to the condition expression closure.   
+- The iterator used in the `for` expression will be moved, so you may need to `.clone()` it if you want to keep a ref of
+  the iterable (for instance when iterating over a field in your actor's state) 
+- `break` and `continue` are not supported. `continue` should be easy to implement for the immediate level by replacing
+  it with an early `return`. `break` would require to create a `TryActorStream`, in particular `TryFold`; same as with `while`.  
+- The for expression can't have an `await` clause itself. Extract it into a variable first. 
+- Currently, you can't iterate a stream, though with some generics magic maybe we could spare expecting an `IntoIterator`
+  and also accept a `Stream` directly in the for expression. But probably it is a bad idea to do it inside a message handler anyway. You should use `Actor::add_stream` instead.
+
+#### Using variables mutated inside, after the loop
+
+As with conditionals, variables are moved inside the for block. If you need to keep using the updated value for them 
+after the loop, we support an assignment syntax for loops like
+
+```rust
+let mut i;
+i = for other_actor in self.other_actors {
+    i += 1;
+    other_actor.send(i).await;
+}
+println!("{}", i)
+```
+
+This is valid rust syntax, but regular for loops always return unit. In this case the macro gets "smart" and given the
+internal for impl is actually a `Fold`, the return value would be the one from accumulator; which purposely will be autofilled 
+with whatever variable names you put in the assignment.
+
+If you happen to need multiple you should
+
+```rust
+let mut i, j;
+(i, j) = for other_actor in self.other_actors {
+    i += 1;
+    j = i + 1;
+    other_actor.send(i).await;
+}
+println!("{}, {}", i, j)
 ```

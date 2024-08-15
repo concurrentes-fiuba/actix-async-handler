@@ -2,7 +2,7 @@
 name = "actix_async_handler"
 description = "Support for async syntax for Actix"
 license = "MIT"
-version = "0.0.4"
+version = "0.1.0"
 edition = "2018"
 repository = "https://github.com/concurrentes-fiuba/actix-async-handler"
 
@@ -18,3 +18,4 @@ rust-format = { version = "0.3.4", features = ["token_stream"] }
 [dev-dependencies]
 actix = "0.13"
 actix-rt = "2.0"
+futures = "0.3"
